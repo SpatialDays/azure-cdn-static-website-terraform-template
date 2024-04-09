@@ -1,0 +1,193 @@
+# standardized template for terraform plan on pull request to branch made
+# by @ivica3730k
+
+# This GitHub action is triggered by a pull request on the prod branch.
+
+# It is responsible for running Terraform validation and Terraform plan and providing feedback on the pull request with the results.
+# The action sets environment variables from the secrets and runs Terraform commands.
+# It checks out the code, performs envsubst on the provider_secrets_template file with the environment variables,
+# sets up Terraform provider, initializes Terraform with newly create backend configuration file, and validates Terraform code.
+# If validation is successful, it runs Terraform plan and outputs the results to a comment on the pull request.
+# If validation or plan fails, it outputs the error message to a comment and fails the build.
+# The action has permission to read the contents and write issues and pull requests.
+
+# to use it, change your branch names, environment name and secrets names
+
+name: Terraform plan on pull request to prod
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+on:
+  pull_request:
+    branches:
+      - prod
+
+concurrency: prod-enviroment
+
+jobs:
+  terraform-plan:
+    runs-on: ubuntu-latest
+    # environment: ENVIRONMENT_NAME # uncomment this line and replace ENVIRONMENT_NAME with the name of the environment if you are using github managed environments
+    env:
+      TF_VAR_SUBSCRIPTION_ID: ${{ secrets.TF_VAR_SUBSCRIPTION_ID }}
+      TF_VAR_CLIENT_ID: ${{ secrets.TF_VAR_CLIENT_ID }}
+      TF_VAR_CLIENT_SECRET: ${{ secrets.TF_VAR_CLIENT_SECRET }}
+      TF_VAR_TENANT_ID: ${{ secrets.TF_VAR_TENANT_ID }}
+      TF_VAR_STATE_RESOURCE_GROUP_NAME: ${{ vars.TF_VAR_STATE_RESOURCE_GROUP_NAME }}
+      TF_VAR_STATE_STORAGE_ACCOUNT_NAME: ${{ vars.TF_VAR_STATE_STORAGE_ACCOUNT_NAME }}
+      TF_VAR_STATE_CONTAINER_NAME: ${{ vars.TF_VAR_STATE_CONTAINER_NAME }}
+      # deployment specific variables
+      TF_VAR_ENVIRONMENT: ${{ vars.TF_VAR_ENVIRONMENT }}
+      TF_VAR_PROJECT_COMMON_NAME: ${{ vars.TF_VAR_PROJECT_COMMON_NAME }}
+      TF_VAR_DOMAIN_NAME: ${{ vars.TF_VAR_DOMAIN_NAME }}
+      TF_VAR_LETSENCRYPT_EMAIL: ${{ vars.TF_VAR_LETSENCRYPT_EMAIL }}
+      TF_VAR_AZURE_REGION: ${{ vars.TF_VAR_AZURE_REGION }}
+
+    steps:
+      #      - name: Exit action as it is disabled
+      #        run: exit 0
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Perform envsubst on provider_secrets_template with environment variables
+        run: |
+          envsubst < provider_secrets_template > provider_secrets
+      - name: Setup Terraform Provider
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.7
+          terraform_wrapper: false
+      - name: Terraform init with backend config
+        id: init
+        run: |
+          touch initalization.txt
+          terraform init -upgrade -backend-config=provider_secrets -no-color 2>&1 | tee initalization.txt
+          exit ${PIPESTATUS[0]}
+        continue-on-error: true
+      - name: Move output to env var
+        run: |
+          echo "INIT_OUTPUT<<EOF" >> $GITHUB_ENV
+          cat initalization.txt >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+      - name: Make artifact with init
+        uses: actions/upload-artifact@v3
+        with:
+          name: init-${{ github.run_number }}
+          path: initalization.txt
+      - name: Write init to comment if it failed
+        if: steps.init.outcome == 'failure'
+        uses: peter-evans/create-or-update-comment@v2
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ## Results
+            terraform init -upgrade initialization: ${{ steps.init.outcome }}
+            Terraform init output for this pull request:
+            ```
+            ${{ env.INIT_OUTPUT }}
+            ```
+      - name: Fail the build if init fails
+        if: steps.init.outcome == 'failure'
+        run: exit 1
+      - name: Terraform validate
+        id: validate
+        run: |
+          terraform validate -no-color 2>&1 | tee validate.txt
+          exit ${PIPESTATUS[0]}
+        continue-on-error: true
+      - name: Save validate.txt into artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: validate-${{ github.run_number }}
+          path: validate.txt
+      - name: Move init output into var
+        run: |
+          echo "VALIDATE_OUTPUT<<EOF" >> $GITHUB_ENV
+          cat validate.txt >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+      - name: Write validate to comment if it failed
+        if: steps.validate.outcome == 'failure'
+        uses: peter-evans/create-or-update-comment@v2
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            # Terraform Validation failed!
+            ## Results
+            terraform init: ${{ steps.init.outcome }}
+            Terraform Validation: ${{ steps.validate.outcome }}
+            Terraform validation output for this pull request:
+            ```
+            ${{ env.VALIDATE_OUTPUT }}
+            ```
+      - name: Fail the build if validation fails
+        if: steps.validate.outcome == 'failure'
+        run: exit 1
+      - name: Terraform plan
+        if: steps.validate.outcome == 'success'
+        id: plan
+        run: |
+          terraform plan -no-color 2>&1 | tee plan.txt
+          exit ${PIPESTATUS[0]}
+        continue-on-error: true
+      # - name: Move output to env var
+      #   run: |
+      #     echo "PLAN_OUTPUT_NON_FILTERED<<EOF" >> $GITHUB_ENV
+      #     cat plan.txt >> $GITHUB_ENV
+      #     echo "EOF" >> $GITHUB_ENV
+      - name: Make artifact with plan
+        uses: actions/upload-artifact@v3
+        with:
+          name: plan-${{ github.run_number }}
+          path: plan.txt
+      - name: Remove clutter from plan
+        run: |
+          cat plan.txt | grep -v "Refreshing state" > plan-filtered.txt
+      - name: Save filtered plan into artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: plan-filtered-${{ github.run_number }}
+          path: plan-filtered.txt
+      - name: Check if plan is longer than 40000 chars
+        id: plan-filter-not-too-long
+        continue-on-error: true
+        run: |
+          if [ $(wc -c < plan-filtered.txt) -gt 40000 ]; then
+            echo "Plan is longer than 40000 chars"
+            exit 1
+          fi
+      - name: Save filtered plan into GITHUB_OUTPUT
+        if: steps.plan-filter-not-too-long.outcome == 'success'
+        run: |
+          echo "PLAN_OUTPUT_FILTERED<<EOF" >> $GITHUB_ENV
+          cat plan-filtered.txt >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+      - name: Output stdout into comment
+        if: steps.plan-filter-not-too-long.outcome == 'success'
+        uses: peter-evans/create-or-update-comment@v2
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ## Results
+            terraform init -upgrade initialization: ${{ steps.init.outcome }}
+            Terraform Validation: ${{ steps.validate.outcome }}
+            Terraform plan for this pull request:
+            ```diff
+            ${{ env.PLAN_OUTPUT_FILTERED }}
+            ```
+      - name: If plan is too long, output comment
+        if: steps.plan-filter-not-too-long.outcome == 'failure'
+        uses: peter-evans/create-or-update-comment@v2
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ## Results
+            terraform init -upgrade initialization: ${{ steps.init.outcome }}
+            Terraform Validation: ${{ steps.validate.outcome }}
+            Terraform plan for this pull request:
+            ```
+            Plan is too long, please check the job output
+            ```
+      - name: Fail the build if plan fails
+        if: steps.plan.outcome == 'failure'
+        run: exit 1

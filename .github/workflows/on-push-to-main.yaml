@@ -1,7 +1,7 @@
 # standardized template for terraform plan on pull request to branch made
 # by @ivica3730k
 
-# This GitHub action is triggered by push to prod branch.
+# This GitHub action is triggered by push to main branch.
 
 # It is responsible for running Terraform validation and Terraform apply and providing feedback on the pull request with the results.
 # The action sets environment variables from the secrets and runs Terraform commands.
@@ -13,7 +13,7 @@
 
 # to use it, change your branch names, environment name and secrets names
 
-name: Terraform apply on push to prod
+name: Terraform apply on push to main
 
 permissions:
   contents: read
@@ -22,13 +22,13 @@ permissions:
 on:
   push:
     branches:
-      - prod
+      - main
   workflow_dispatch:
   workflow_call:
   schedule:
     - cron: "0 7 * * 1" # every Monday at 7am UTC to renew the certificate if it is about to expire
 
-concurrency: prod-enviroment
+concurrency: main-enviroment
 
 jobs:
   terraform-apply:

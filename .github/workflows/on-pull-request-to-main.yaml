@@ -1,7 +1,7 @@
 # standardized template for terraform plan on pull request to branch made
 # by @ivica3730k
 
-# This GitHub action is triggered by a pull request on the prod branch.
+# This GitHub action is triggered by a pull request on the main branch.
 
 # It is responsible for running Terraform validation and Terraform plan and providing feedback on the pull request with the results.
 # The action sets environment variables from the secrets and runs Terraform commands.
@@ -13,7 +13,7 @@
 
 # to use it, change your branch names, environment name and secrets names
 
-name: Terraform plan on pull request to prod
+name: Terraform plan on pull request to main
 
 permissions:
   contents: read
@@ -22,9 +22,9 @@ permissions:
 on:
   pull_request:
     branches:
-      - prod
-
-concurrency: prod-enviroment
+      - main
+      
+concurrency: main-enviroment
 
 jobs:
   terraform-plan:
